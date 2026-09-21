@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Live Wallpaper</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      color: #4dff88;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      user-select: none;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <script>
+  (() => {
+    "use strict";
+
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    // ---- Procedural noise to simulate audio signal ----
+    // Multiple layered sine waves at incommensurate frequencies create an
+    // organic, never-repeating waveform that drives the visualizer the same
+    // way a real audio signal would.
+    const WAVE_COUNT = 12;
+    const waves = [];
+    for (let i = 0; i < WAVE_COUNT; i++) {
+      waves.push({
+        freq: 0.3 + Math.random() * 4.5,
+        phase: Math.random() * Math.PI * 2,
+        amp: 0.15 + Math.random() * 0.35,
+        drift: 0.01 + Math.random() * 0.03,
+      });
+    }
+
+    function synthSample(t, i, n) {
+      let v = 0;
+      const p = i / n;
+      for (let w = 0; w < WAVE_COUNT; w++) {
+        const wv = waves[w];
+        v += wv.amp * Math.sin(p * Math.PI * 2 * (1 + w * 0.7) + t * wv.freq + wv.phase + Math.sin(t * wv.drift) * 3);
+      }
+      return v / WAVE_COUNT;
+    }
+
+    // Simulate band energy from the procedural signal
+    function synthBands(t) {
+      const bass = 0.2 + 0.15 * Math.sin(t * 0.31) + 0.1 * Math.sin(t * 0.17);
+      const mid = 0.25 + 0.12 * Math.sin(t * 0.53 + 1.2) + 0.08 * Math.sin(t * 0.29);
+      const treb = 0.15 + 0.1 * Math.sin(t * 0.97 + 2.4) + 0.06 * Math.sin(t * 0.61);
+      return { bass, mid, treb };
+    }
+
+    // Simulate RMS energy
+    function synthRMS(t) {
+      return 0.12 + 0.08 * Math.sin(t * 0.23) + 0.06 * Math.sin(t * 0.41 + 1.0)
+           + 0.04 * Math.abs(Math.sin(t * 1.7));
+    }
+
+    // ---- Render layers ----
+    let lineCanvas = null, lctx = null, glowCanvas = null, gctx = null;
+    let glow2Canvas = null, g2ctx = null;
+    const HAS_FILTER = "filter" in CanvasRenderingContext2D.prototype;
+    let glowBCanvas = null, bctx = null, glowCCanvas = null, cctx = null;
+    let vigGrad = null, stars = [];
+
+    let perfAvg = 16;
+
+    // ---- Canvas ----
+    let W = 0, H = 0, DPR = 1;
+    function resize() {
+      DPR = window.devicePixelRatio || 1;
+      W = Math.floor(window.innerWidth * DPR);
+      H = Math.floor(window.innerHeight * DPR);
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = window.innerWidth + "px";
+      canvas.style.height = window.innerHeight + "px";
+      ctx.imageSmoothingQuality = "high";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+
+      lineCanvas = lineCanvas || document.createElement("canvas");
+      glowCanvas = glowCanvas || document.createElement("canvas");
+      glow2Canvas = glow2Canvas || document.createElement("canvas");
+      lineCanvas.width = W; lineCanvas.height = H;
+      glowCanvas.width = Math.max(2, W >> 2); glowCanvas.height = Math.max(2, H >> 2);
+      glow2Canvas.width = glowCanvas.width; glow2Canvas.height = glowCanvas.height;
+      lctx = lineCanvas.getContext("2d");
+      gctx = glowCanvas.getContext("2d");
+      g2ctx = glow2Canvas.getContext("2d");
+      gctx.imageSmoothingQuality = "high";
+      g2ctx.imageSmoothingQuality = "high";
+      if (!HAS_FILTER) {
+        glowBCanvas = glowBCanvas || document.createElement("canvas");
+        glowCCanvas = glowCCanvas || document.createElement("canvas");
+        glowBCanvas.width = Math.max(2, W >> 3); glowBCanvas.height = Math.max(2, H >> 3);
+        glowCCanvas.width = Math.max(2, W >> 4); glowCCanvas.height = Math.max(2, H >> 4);
+        bctx = glowBCanvas.getContext("2d");
+        cctx = glowCCanvas.getContext("2d");
+      }
+
+      vigGrad = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.hypot(W, H) * 0.58);
+      vigGrad.addColorStop(0, "rgba(0,0,0,0)");
+      vigGrad.addColorStop(1, "rgba(0,0,0,0.55)");
+      if (!stars || !stars.length) {
+        stars = [];
+        for (let i = 0; i < 80; i++) {
+          stars.push({
+            x: Math.random(), y: Math.random(),
+            r: 0.5 + Math.random() * 1.3,
+            ph: Math.random() * 6.28, sp: 0.15 + Math.random() * 0.6,
+          });
+        }
+      }
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // ---- State ----
+    let t = 0, last = performance.now();
+    let rot = 0;
+    let energy = 0;
+    let slow = 1;
+    let slowTarget = 1;
+    let nextEvent = 0;
+    let breathe = 1;
+
+    const NSHAPES = 18;
+    let formA = 0, formB = 0, morph = 1;
+    let lastShapeT = 0;
+    let mirrorOn = false, backdropOn = true, duetOn = false;
+
+    let beatPeriod = 0.5, lastOnsetT = -10, beatPhase = 0, beatConf = 0;
+    let beatPulse = 0, beatGain = 0;
+
+    let tension = 0, releaseEnv = 0, energyVslow = 0;
+    let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
+
+    let bassS = 0, midS = 0, trebS = 0;
+
+    // Color hue drifts slowly over time
+    let hue = 140;
+    let hueTarget = 140;
+    let nextHueChange = 20;
+
+    // Settings
+    const sensitivity = 1.0;
+    const motion = 0.4;
+    const react = 0.5;
+    const blend = 1.0;
+
+    // Waveform buffers
+    const BUFLEN = 2048;
+    let smoothBuf = new Float32Array(BUFLEN);
+    let scratchBuf = new Float32Array(BUFLEN);
+    let smoothBufV = new Float32Array(BUFLEN);
+    let synthBufRaw = new Float32Array(BUFLEN);
+
+    // Lorenz attractor path
+    let lorenzPts = null;
+    function getLorenz() {
+      if (lorenzPts) return lorenzPts;
+      const N = 2400;
+      lorenzPts = new Float32Array(N * 3);
+      let x = 0.1, y = 0, z = 25;
+      for (let i = 0; i < 1500; i++) {
+        const dx = 10 * (y - x), dy = x * (28 - z) - y, dz = x * y - (8 / 3) * z;
+        x += dx * 0.004; y += dy * 0.004; z += dz * 0.004;
+      }
+      let maxA = 0.0001;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < 3; j++) {
+          const dx = 10 * (y - x), dy = x * (28 - z) - y, dz = x * y - (8 / 3) * z;
+          x += dx * 0.004; y += dy * 0.004; z += dz * 0.004;
+        }
+        lorenzPts[i * 3] = x;
+        lorenzPts[i * 3 + 1] = z - 25;
+        lorenzPts[i * 3 + 2] = y;
+        maxA = Math.max(maxA, Math.abs(x), Math.abs(z - 25), Math.abs(y));
+      }
+      for (let i = 0; i < N * 3; i++) lorenzPts[i] /= maxA;
+      return lorenzPts;
+    }
+
+    function superR(ang, m, n1, n2, n3) {
+      const c = Math.abs(Math.cos(m * ang / 4));
+      const s = Math.abs(Math.sin(m * ang / 4));
+      return Math.pow(Math.pow(c, n2) + Math.pow(s, n3), -1 / n1);
+    }
+
+    function drawScope(sens, energy, flicker, motion, react, bloom) {
+      const n = BUFLEN;
+      const TWO_PI = Math.PI * 2;
+      const PI = Math.PI;
+      const baseR = Math.min(W, H) * 0.40 * sens;
+
+      const struct = react * 2;
+      const tenseK = 1 + (tension * 0.7 - releaseEnv * 0.25) * struct;
+      const coil = 1 - tension * 0.12 * struct + releaseEnv * 0.2 * struct;
+      const loopsBase = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct) * tenseK;
+      const twistK = midS * 1.6 * struct;
+      const thickK = 1 + trebS * 0.9 * struct;
+      const amp = (0.2 + Math.min(energy, 0.3)) * react;
+      const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
+      const ct = Math.cos(tilt), st = Math.sin(tilt);
+      let loops = loopsBase;
+
+      function formPoint(form, p, s, out) {
+        const a = s * amp;
+        const th = p * TWO_PI * loops;
+        let x, y, z;
+        switch (form) {
+          case 1: {
+            const R = baseR * 0.68, r2 = baseR * 0.30 * (1 + a);
+            const v = p * TWO_PI * Math.max(2, loops * 0.5);
+            const rr = R + r2 * Math.cos(v);
+            x = rr * Math.cos(th); y = r2 * Math.sin(v); z = rr * Math.sin(th);
+            break;
+          }
+          case 2: {
+            const r = baseR * 0.6 * (1 + a);
+            x = r * Math.cos(th); y = (p - 0.5) * 2 * baseR; z = r * Math.sin(th);
+            break;
+          }
+          case 3: {
+            const R = baseR * (1 + a * 0.5);
+            const C = Math.max(2, loops * 0.5);
+            x = R * Math.sin(3 * p * TWO_PI);
+            y = R * Math.sin(2 * p * TWO_PI + 0.9);
+            z = R * Math.sin(C * p * TWO_PI + 0.4);
+            break;
+          }
+          case 4: {
+            const r = baseR * p * (1 + a);
+            x = r * Math.cos(th); y = (p - 0.5) * 2 * baseR; z = r * Math.sin(th);
+            break;
+          }
+          case 5: {
+            const k = Math.max(2, 2 + loops * 0.4);
+            const rr = baseR * (0.35 + 0.65 * Math.abs(Math.cos(k * p * TWO_PI))) * (1 + a);
+            const ang = p * TWO_PI * Math.max(1, loops * 0.3);
+            x = rr * Math.cos(ang); y = rr * Math.sin(ang); z = baseR * 0.3 * Math.sin(p * TWO_PI * 3);
+            break;
+          }
+          case 6: {
+            const q = 3 + loops * 0.3;
+            const u = p * TWO_PI;
+            const R = baseR * 0.34 * (1 + a);
+            const rr = Math.cos(q * u) + 2;
+            x = R * rr * Math.cos(2 * u);
+            y = R * rr * Math.sin(2 * u);
+            z = R * -Math.sin(q * u) * 1.4;
+            break;
+          }
+          case 7: {
+            const u = p * TWO_PI * 2;
+            const v = 0.38 * (1 + a);
+            const R = baseR * 0.62;
+            x = R * (1 + v * Math.cos(u / 2)) * Math.cos(u);
+            z = R * (1 + v * Math.cos(u / 2)) * Math.sin(u);
+            y = R * v * Math.sin(u / 2) * 1.6;
+            break;
+          }
+          case 8: {
+            const u = p * PI * 24;
+            const rb = Math.exp(Math.sin(u)) - 2 * Math.cos(4 * u)
+                     + Math.pow(Math.sin((2 * u - PI) / 24), 5);
+            const R = baseR * 0.26 * (1 + a);
+            x = R * rb * Math.sin(u);
+            y = R * rb * Math.cos(u);
+            z = baseR * 0.3 * Math.sin(u * 0.5);
+            break;
+          }
+          case 9: {
+            const u = p * TWO_PI * Math.max(1, loops * 0.4);
+            const R = baseR * (1 + a);
+            x = R * Math.sin(u);
+            y = R * Math.sin(u) * Math.cos(u) * 0.9;
+            z = R * 0.35 * Math.cos(3 * u);
+            break;
+          }
+          case 10: {
+            const L = getLorenz();
+            const NL = L.length / 3;
+            const fi = p * (NL - 1.001);
+            const i0 = Math.floor(fi), fr = fi - i0;
+            const sc = baseR * 1.05 * (1 + a * 0.5);
+            x = (L[i0 * 3] + (L[i0 * 3 + 3] - L[i0 * 3]) * fr) * sc;
+            y = (L[i0 * 3 + 1] + (L[i0 * 3 + 4] - L[i0 * 3 + 1]) * fr) * sc;
+            z = (L[i0 * 3 + 2] + (L[i0 * 3 + 5] - L[i0 * 3 + 2]) * fr) * sc;
+            break;
+          }
+          case 11: {
+            const lon = th * 0.5;
+            const lat = (p - 0.5) * PI;
+            const r1 = superR(lon, 6, 0.3, 0.3, 0.3);
+            const r2s = superR(lat, 4, 0.7, 0.7, 0.7);
+            const R = baseR * 0.85 * (1 + a);
+            x = R * r1 * Math.cos(lon) * r2s * Math.cos(lat);
+            y = R * r2s * Math.sin(lat);
+            z = R * r1 * Math.sin(lon) * r2s * Math.cos(lat);
+            break;
+          }
+          case 12: {
+            const turns = 3 + loops * 0.25;
+            const u = p * TWO_PI * turns;
+            const strand = Math.floor(p * 44) % 2;
+            const r = baseR * 0.42 * (1 + a);
+            x = r * Math.cos(u + strand * PI);
+            z = r * Math.sin(u + strand * PI);
+            y = (p - 0.5) * 2 * baseR;
+            break;
+          }
+          case 13: {
+            const u = p * TWO_PI;
+            const v = p * TWO_PI * Math.max(8, loops * 2);
+            const w = Math.cos(u / 2) * Math.sin(v) - Math.sin(u / 2) * Math.sin(2 * v);
+            const R = baseR * 0.5;
+            const rr = R * (1 + 0.45 * (1 + a) * w);
+            x = rr * Math.cos(u);
+            y = rr * Math.sin(u);
+            z = R * 0.75 * (Math.sin(u / 2) * Math.sin(v) + Math.cos(u / 2) * Math.sin(2 * v));
+            break;
+          }
+          case 14: {
+            const outward = p < 0.5;
+            const q = outward ? p * 2 : (1 - p) * 2;
+            const u = q * TWO_PI * 2.4 + (outward ? 0 : PI);
+            const r = baseR * (0.06 + 0.94 * Math.pow(q, 1.35)) * (1 + a);
+            x = r * Math.cos(u);
+            z = r * Math.sin(u);
+            y = baseR * 0.12 * Math.sin(q * TWO_PI * 5) * (1 - q);
+            break;
+          }
+          case 15: {
+            const u = p * TWO_PI * 2;
+            const R = baseR * 0.055 * (1 + a);
+            const sy = Math.sin(u);
+            x = R * 16 * sy * sy * sy;
+            y = -R * (13 * Math.cos(u) - 5 * Math.cos(2 * u) - 2 * Math.cos(3 * u) - Math.cos(4 * u));
+            z = baseR * 0.24 * Math.sin(3 * u);
+            break;
+          }
+          case 16: {
+            const u = p * TWO_PI;
+            const R = baseR * 0.55 * (1 + a);
+            x = R * (Math.cos(u) + 0.55 * Math.cos(-5 * u));
+            y = R * (Math.sin(u) + 0.55 * Math.sin(-5 * u));
+            z = baseR * 0.3 * Math.cos(6 * u);
+            break;
+          }
+          case 17: {
+            if (p < 0.72) {
+              const q = p / 0.72;
+              const thp = q * TWO_PI * Math.max(6, loops);
+              const phi = q * PI, sp = Math.sin(phi);
+              const r = baseR * 0.58 * (1 + a);
+              x = r * sp * Math.cos(thp);
+              y = r * Math.cos(phi) * 0.92;
+              z = r * sp * Math.sin(thp);
+            } else {
+              const q = (p - 0.72) / 0.28;
+              const u = q * TWO_PI * 3;
+              const rr = baseR * (0.8 + 0.22 * q) * (1 + a * 0.3);
+              x = rr * Math.cos(u);
+              z = rr * Math.sin(u);
+              y = baseR * 0.02 * Math.sin(u * 7);
+            }
+            break;
+          }
+          default: {
+            const r = baseR * (1 + a);
+            const phi = p * PI, sp = Math.sin(phi);
+            x = r * sp * Math.cos(th); y = r * Math.cos(phi); z = r * sp * Math.sin(th);
+          }
+        }
+        out[0] = x; out[1] = y; out[2] = z;
+      }
+
+      const ease = (morph * morph * (3 - 2 * morph)) * blend;
+      const persp = baseR * 3.2;
+      const NB = 4;
+
+      function buildBands(buf, yawAngle, loopsLocal, sc) {
+        loops = loopsLocal;
+        const cy = Math.cos(yawAngle), sy = Math.sin(yawAngle);
+        const A = [0, 0, 0], B = [0, 0, 0];
+        const pts = [];
+        const step = perfAvg < 19 ? 4 : perfAvg < 34 ? 8 : 12;
+        for (let i = 0; i < n; i += step) {
+          const p = i / n;
+          const s = buf[i] * 3.2;
+          formPoint(formA, p, s, A);
+          let x3 = A[0], y3 = A[1], z3 = A[2];
+          if (ease > 0) {
+            formPoint(formB, p, s, B);
+            x3 += (B[0] - x3) * ease;
+            y3 += (B[1] - y3) * ease;
+            z3 += (B[2] - z3) * ease;
+          }
+          if (twistK) {
+            const tw = twistK * (y3 / baseR);
+            const cw = Math.cos(tw), sw = Math.sin(tw);
+            const xt = x3 * cw + z3 * sw;
+            z3 = -x3 * sw + z3 * cw;
+            x3 = xt;
+          }
+          const xr = x3 * cy + z3 * sy;
+          const zr = -x3 * sy + z3 * cy;
+          const yt = y3 * ct - zr * st;
+          const zd = y3 * st + zr * ct;
+          const f = (persp / Math.max(persp * 0.4, persp - zd)) * sc;
+          const px = xr * f, py = yt * f;
+          const pd = Math.max(0, Math.min(1, zd / baseR * 0.5 + 0.5));
+          pts.push(px, py, pd);
+        }
+
+        const bands = [];
+        for (let b = 0; b < NB; b++) bands.push(new Path2D());
+        const m = pts.length / 3;
+        let prevB = -1;
+        for (let k = 1; k < m - 1; k++) {
+          const x1 = pts[3 * k], y1 = pts[3 * k + 1];
+          const b = Math.min(NB - 1, Math.floor(pts[3 * k + 2] * NB));
+          if (b !== prevB) {
+            bands[b].moveTo((pts[3 * (k - 1)] + x1) / 2, (pts[3 * (k - 1) + 1] + y1) / 2);
+            prevB = b;
+          }
+          bands[b].quadraticCurveTo(x1, y1, (x1 + pts[3 * (k + 1)]) / 2, (y1 + pts[3 * (k + 1) + 1]) / 2);
+        }
+        return bands;
+      }
+
+      lctx.clearRect(0, 0, W, H);
+      lctx.save();
+      lctx.translate(W / 2, H / 2);
+      lctx.rotate(0.12 * Math.sin(t * 0.09));
+      lctx.scale(breathe * coil, breathe * coil);
+      lctx.globalCompositeOperation = "lighter";
+      lctx.lineJoin = "round";
+      lctx.lineCap = "round";
+
+      const sat = Math.min(100, (hue / 14) * 100);
+      const glowL = 58 + (100 - sat) * 0.25;
+      const swell = 1 + bloom * 0.35 + beatGain * 0.15;
+      const wMul = thickK;
+
+      function strokeBands(bands, hueX, aMul) {
+        for (let b = 0; b < NB; b++) {
+          const df = (b + 0.5) / NB;
+          const wf = (0.55 + 0.9 * df) * wMul;
+          const af = 0.35 + 0.75 * df;
+
+          lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, " + (glowL + 4) + "%, " +
+            Math.min(1, 0.55 * flicker * af * swell * aMul).toFixed(3) + ")";
+          lctx.stroke(bands[b]);
+
+          lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, 90%, " +
+            Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell * aMul).toFixed(3) + ")";
+          lctx.stroke(bands[b]);
+        }
+      }
+
+      const mainBands = buildBands(smoothBuf, rot, loopsBase, 1);
+      strokeBands(mainBands, hue, 1);
+
+      if (duetOn && smoothBufV) {
+        const duetBands = buildBands(smoothBufV, -rot * 0.85 + 0.7, loopsBase * 0.62, 0.94);
+        strokeBands(duetBands, hue - 45, 0.55);
+      }
+
+      if (mirrorOn) {
+        lctx.scale(-1, 1);
+        lctx.rotate(0.5 + 0.3 * Math.sin(t * 0.05));
+        strokeBands(mainBands, hue + 30, 0.34);
+      }
+
+      lctx.restore();
+    }
+
+    let bgGrad = null, bgKey = "";
+    function drawBackdrop() {
+      const key = hue + "|" + W + "x" + H;
+      if (key !== bgKey) {
+        const sat = Math.min(100, (hue / 14) * 100);
+        bgGrad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75);
+        bgGrad.addColorStop(0, "hsla(" + hue + ", " + sat + "%, 40%, 0.16)");
+        bgGrad.addColorStop(1, "rgba(0,0,0,0)");
+        bgKey = key;
+      }
+      const a = 0.03 + (energy * 0.12 + bloom * 0.08) * react * 2;
+      ctx.globalAlpha = Math.min(1, a / 0.16);
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = "#fff";
+      for (const s of stars) {
+        const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
+        ctx.globalAlpha = 0.04 + 0.2 * tw * tw;
+        const sr = s.r * DPR;
+        ctx.fillRect(s.x * W, s.y * H, sr, sr);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function frame(now) {
+      const rawMs = now - last;
+      const dt = Math.min(rawMs / 1000, 0.05);
+      last = now;
+      try {
+        t += dt;
+
+        const kEnv = 1 - Math.exp(-3.1 * dt);
+        const kBlend = 1 - Math.exp(-7.7 * dt);
+        const kBand = 1 - Math.exp(-2.5 * dt);
+        const kFast = 1 - Math.exp(-42 * dt);
+        const kVslow = 1 - Math.exp(-0.36 * dt);
+
+        perfAvg += (Math.min(rawMs, 100) - perfAvg) * 0.04;
+
+        // Generate procedural waveform
+        for (let i = 0; i < BUFLEN; i++) {
+          synthBufRaw[i] = synthSample(t, i, BUFLEN);
+        }
+
+        // Smooth it the same way the original does
+        let acc = 0;
+        for (let i = 0; i < BUFLEN; i++) {
+          acc += (synthBufRaw[i] - acc) * 0.06;
+          scratchBuf[i] = acc;
+        }
+        acc = 0;
+        for (let i = BUFLEN - 1; i >= 0; i--) {
+          acc += (scratchBuf[i] - acc) * 0.06;
+          smoothBuf[i] += (acc - smoothBuf[i]) * kBlend;
+        }
+
+        // Duet voice buffer (lower frequency variation)
+        for (let i = 0; i < BUFLEN; i++) {
+          const p = i / BUFLEN;
+          let v = 0;
+          for (let w = 0; w < 4; w++) {
+            const wv = waves[w];
+            v += wv.amp * 1.5 * Math.sin(p * Math.PI * 2 * (1 + w * 0.3) + t * wv.freq * 0.4 + wv.phase);
+          }
+          scratchBuf[i] = v / 4;
+        }
+        acc = 0;
+        for (let i = 0; i < BUFLEN; i++) {
+          acc += (scratchBuf[i] - acc) * 0.06;
+          scratchBuf[i] = acc;
+        }
+        acc = 0;
+        for (let i = BUFLEN - 1; i >= 0; i--) {
+          acc += (scratchBuf[i] - acc) * 0.06;
+          smoothBufV[i] += (acc - smoothBufV[i]) * kBlend;
+        }
+
+        // Simulated energy
+        const rms = synthRMS(t);
+        energy += (rms - energy) * kEnv;
+
+        // Simulated band envelopes
+        const bands = synthBands(t);
+        bassS += (bands.bass - bassS) * kBand;
+        midS += (bands.mid - midS) * kBand;
+        trebS += (bands.treb - trebS) * kBand;
+
+        // Pace changes
+        if (t > nextEvent) {
+          nextEvent = t + 3 + Math.random() * 6;
+          const r = Math.random();
+          slowTarget = r < 0.35 ? 0.05 + Math.random() * 0.2
+                     : r < 0.70 ? 0.9 + Math.random() * 0.8
+                     :          -(0.6 + Math.random() * 0.8);
+        }
+        slow += (slowTarget - slow) * dt * 0.4;
+
+        rot += (0.3 + energy * 1.1 * react) * slow * dt + beatGain * 0.5 * dt;
+
+        if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
+
+        // Bloom from synthetic "hits"
+        fastE += (rms - fastE) * kFast;
+        if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
+          bloomTarget = 1;
+          bloomGate = t + 0.5;
+
+          const iv = t - lastOnsetT;
+          lastOnsetT = t;
+          if (iv > 0.22 && iv < 2.0) {
+            let cand = iv;
+            while (cand > 0.85) cand /= 2;
+            while (cand < 0.3) cand *= 2;
+            if (Math.abs(cand - beatPeriod) / beatPeriod < 0.18) {
+              beatPeriod += (cand - beatPeriod) * 0.25;
+              beatConf = Math.min(1, beatConf + 0.25);
+              const err = beatPhase % 1;
+              beatPhase -= (err < 0.5 ? err : err - 1) * 0.5;
+            } else if ((beatConf -= 0.12) <= 0) {
+              beatPeriod = cand;
+              beatConf = 0.2;
+            }
+          }
+
+          if (tension > 0.25) {
+            releaseEnv = Math.min(1, releaseEnv + tension * 0.9);
+            tension *= 0.25;
+          }
+        }
+        bloomTarget *= Math.exp(-dt * 1.4);
+        bloom += (bloomTarget - bloom) * (1 - Math.exp(-5 * dt));
+
+        beatPhase += dt / beatPeriod;
+        beatConf = Math.max(0, beatConf - dt * 0.05);
+        beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * (1 - Math.exp(-14 * dt));
+        beatGain = beatPulse * beatConf * react * 2;
+
+        energyVslow += (rms - energyVslow) * kVslow;
+        tension = Math.min(1, Math.max(0,
+          tension + (Math.max(0, energy - energyVslow * 1.18) * 2.0 - 0.05) * dt));
+        releaseEnv *= Math.exp(-dt * 1.5);
+
+        // Auto shape cycling
+        const due = t - lastShapeT;
+        if ((due > 14 && (bloomTarget > 0.9 || energy < 0.04)) || due > 30) {
+          formA = formB;
+          formB = (formB + 1 + Math.floor(Math.random() * (NSHAPES - 1))) % NSHAPES;
+          morph = 0;
+          lastShapeT = t;
+        }
+
+        // Slowly drift the hue
+        if (t > nextHueChange) {
+          hueTarget = Math.random() * 360;
+          nextHueChange = t + 25 + Math.random() * 35;
+        }
+        let hueDiff = hueTarget - hue;
+        if (hueDiff > 180) hueDiff -= 360;
+        if (hueDiff < -180) hueDiff += 360;
+        hue += hueDiff * dt * 0.04;
+        if (hue < 0) hue += 360;
+        if (hue >= 360) hue -= 360;
+
+        // Occasionally toggle mirror and duet
+        if (Math.random() < 0.0002) mirrorOn = !mirrorOn;
+        if (Math.random() < 0.00015) duetOn = !duetOn;
+
+        breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react + beatGain * 0.04;
+
+        const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
+        drawScope(sensitivity, energy, flicker, motion, react, bloom);
+
+        // Composite
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, W, H);
+
+        if (backdropOn) drawBackdrop();
+
+        const gw = glowCanvas.width, gh = glowCanvas.height;
+        if (HAS_FILTER) {
+          gctx.filter = "none";
+          gctx.clearRect(0, 0, gw, gh);
+          gctx.drawImage(lineCanvas, 0, 0, gw, gh);
+          g2ctx.clearRect(0, 0, gw, gh);
+          g2ctx.filter = "blur(2px)";
+          g2ctx.drawImage(glowCanvas, 0, 0);
+          gctx.filter = "blur(4px)";
+          gctx.clearRect(0, 0, gw, gh);
+          gctx.drawImage(glow2Canvas, 0, 0);
+        } else {
+          const bw = glowBCanvas.width, bh = glowBCanvas.height;
+          const cw = glowCCanvas.width, ch = glowCCanvas.height;
+          gctx.clearRect(0, 0, gw, gh);
+          gctx.drawImage(lineCanvas, 0, 0, gw, gh);
+          bctx.clearRect(0, 0, bw, bh);
+          bctx.drawImage(glowCanvas, 0, 0, bw, bh);
+          cctx.clearRect(0, 0, cw, ch);
+          cctx.drawImage(glowBCanvas, 0, 0, cw, ch);
+          g2ctx.clearRect(0, 0, gw, gh);
+          g2ctx.drawImage(glowBCanvas, 0, 0, gw, gh);
+          gctx.clearRect(0, 0, gw, gh);
+          gctx.drawImage(glowCCanvas, 0, 0, gw, gh);
+        }
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = Math.min(1, 0.7 * (1 + bloom * 0.6));
+        ctx.drawImage(glow2Canvas, 0, 0, W, H);
+        ctx.globalAlpha = Math.min(1, 0.45 * (1 + bloom));
+        ctx.drawImage(glowCanvas, 0, 0, W, H);
+        ctx.globalAlpha = 1;
+        ctx.drawImage(lineCanvas, 0, 0);
+        ctx.restore();
+
+        if (backdropOn) {
+          ctx.fillStyle = vigGrad;
+          ctx.fillRect(0, 0, W, H);
+        }
+      } catch (err) {
+        console.error("render error:", err);
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+  </script>
+</body>
+</html>
