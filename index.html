@@ -18,10 +18,50 @@
       -webkit-tap-highlight-color: transparent;
     }
     #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+    #colorBar {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(320px, calc(100% - 48px));
+      z-index: 10;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      pointer-events: none;
+    }
+    #colorBar.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #hue {
+      -webkit-appearance: none; appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 6px;
+      outline: none;
+      background: linear-gradient(90deg,
+        hsl(0,100%,55%), hsl(30,100%,55%), hsl(60,100%,55%), hsl(90,100%,55%),
+        hsl(120,100%,55%), hsl(150,100%,55%), hsl(180,100%,55%), hsl(210,100%,55%),
+        hsl(240,100%,55%), hsl(270,100%,55%), hsl(300,100%,55%), hsl(330,100%,55%), hsl(360,100%,55%));
+    }
+    #hue::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; cursor: pointer;
+      box-shadow: 0 0 10px rgba(255,255,255,0.6);
+    }
+    #hue::-moz-range-thumb {
+      width: 16px; height: 16px; border: none; border-radius: 50%;
+      background: #fff; cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
+  <div id="colorBar">
+    <input id="hue" type="range" min="0" max="360" step="1" value="140" />
+  </div>
 
   <script>
   (() => {
@@ -152,10 +192,23 @@
 
     let bassS = 0, midS = 0, trebS = 0;
 
-    // Color hue randomized on each load and drifts over time
-    let hue = Math.random() * 360;
-    let hueTarget = Math.random() * 360;
-    let nextHueChange = t + 25 + Math.random() * 35;
+    // Color from slider
+    const hueInput = document.getElementById("hue");
+    const colorBar = document.getElementById("colorBar");
+    hueInput.value = String(Math.floor(Math.random() * 360));
+    let hue = parseFloat(hueInput.value);
+    let idleTimer = null;
+    function showSlider() {
+      colorBar.classList.add("visible");
+      document.body.style.cursor = "default";
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        colorBar.classList.remove("visible");
+        document.body.style.cursor = "none";
+      }, 2500);
+    }
+    window.addEventListener("mousemove", showSlider);
+    window.addEventListener("touchstart", showSlider, { passive: true });
 
     // Settings
     const sensitivity = 1.0;
@@ -644,17 +697,7 @@
           lastShapeT = t;
         }
 
-        // Slowly drift the hue
-        if (t > nextHueChange) {
-          hueTarget = Math.random() * 360;
-          nextHueChange = t + 25 + Math.random() * 35;
-        }
-        let hueDiff = hueTarget - hue;
-        if (hueDiff > 180) hueDiff -= 360;
-        if (hueDiff < -180) hueDiff += 360;
-        hue += hueDiff * dt * 0.04;
-        if (hue < 0) hue += 360;
-        if (hue >= 360) hue -= 360;
+        hue = parseFloat(hueInput.value);
 
         // Occasionally toggle mirror and duet (rare)
         if (Math.random() < 0.00005) mirrorOn = !mirrorOn;
