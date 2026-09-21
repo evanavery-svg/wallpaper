@@ -569,10 +569,9 @@
       ctx.fillStyle = "#fff";
       for (const s of stars) {
         const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
-        ctx.globalAlpha = 0.04 + 0.2 * tw * tw;
-        const sr = s.r * DPR;
+        ctx.globalAlpha = 0.02 + 0.09 * tw * tw;
         ctx.beginPath();
-        ctx.arc(s.x * W, s.y * H, sr, 0, 6.2832);
+        ctx.arc(s.x * W, s.y * H, s.r * DPR * 0.5, 0, 6.2832);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
