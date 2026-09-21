@@ -74,7 +74,9 @@
     // Multiple layered sine waves at incommensurate frequencies create an
     // organic, never-repeating waveform that drives the visualizer the same
     // way a real audio signal would.
+    const BUFLEN = 2048;
     const WAVE_COUNT = 12;
+    const DUET_WAVES = 4;
     const waves = [];
     for (let i = 0; i < WAVE_COUNT; i++) {
       waves.push({
@@ -85,14 +87,45 @@
       });
     }
 
-    function synthSample(t, i, n) {
-      let v = 0;
-      const p = i / n;
+    // Each wave's contribution is amp * sin(p * k + phase), where k and amp are
+    // fixed and phase varies only with time. Keeping phase out of the per-sample
+    // loop turns 2048 sin() calls per wave per frame into one.
+    const waveK = new Float64Array(WAVE_COUNT);
+    const waveAmp = new Float64Array(WAVE_COUNT);
+    const wavePhase = new Float64Array(WAVE_COUNT);
+    const duetK = new Float64Array(DUET_WAVES);
+    const duetAmp = new Float64Array(DUET_WAVES);
+    const duetPhase = new Float64Array(DUET_WAVES);
+    for (let w = 0; w < WAVE_COUNT; w++) {
+      waveK[w] = Math.PI * 2 * (1 + w * 0.7);
+      waveAmp[w] = waves[w].amp / WAVE_COUNT;
+    }
+    for (let w = 0; w < DUET_WAVES; w++) {
+      duetK[w] = Math.PI * 2 * (1 + w * 0.3);
+      duetAmp[w] = waves[w].amp * 1.5 / DUET_WAVES;
+    }
+
+    function fillWave(t, out) {
       for (let w = 0; w < WAVE_COUNT; w++) {
         const wv = waves[w];
-        v += wv.amp * Math.sin(p * Math.PI * 2 * (1 + w * 0.7) + t * wv.freq + wv.phase + Math.sin(t * wv.drift) * 1.5);
+        wavePhase[w] = t * wv.freq + wv.phase + Math.sin(t * wv.drift) * 1.5;
       }
-      return v / WAVE_COUNT;
+      for (let i = 0; i < BUFLEN; i++) {
+        const p = i / BUFLEN;
+        let v = 0;
+        for (let w = 0; w < WAVE_COUNT; w++) v += waveAmp[w] * Math.sin(p * waveK[w] + wavePhase[w]);
+        out[i] = v;
+      }
+    }
+
+    function fillDuet(t, out) {
+      for (let w = 0; w < DUET_WAVES; w++) duetPhase[w] = t * waves[w].freq * 0.4 + waves[w].phase;
+      for (let i = 0; i < BUFLEN; i++) {
+        const p = i / BUFLEN;
+        let v = 0;
+        for (let w = 0; w < DUET_WAVES; w++) v += duetAmp[w] * Math.sin(p * duetK[w] + duetPhase[w]);
+        out[i] = v;
+      }
     }
 
     // Simulate band energy from the procedural signal
@@ -117,6 +150,7 @@
     let vigGrad = null, stars = [];
 
     let perfAvg = 16;
+    let stepLevel = 4;
 
     // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
@@ -185,11 +219,6 @@
     let mirrorFade = mirrorOn ? 1 : 0;
     let duetFade = duetOn ? 1 : 0;
 
-    let beatPeriod = 0.5, lastOnsetT = -10, beatPhase = 0, beatConf = 0;
-    let beatPulse = 0, beatGain = 0;
-
-    let tension = 0, releaseEnv = 0, energyVslow = synthRMS(t);
-    let fastE = synthRMS(t), bloom = 0, bloomTarget = 0, bloomGate = 0;
     let energy = synthRMS(t);
 
     const initBands = synthBands(t);
@@ -223,11 +252,10 @@
     const blend = 1.0;
 
     // Waveform buffers
-    const BUFLEN = 2048;
-    let smoothBuf = new Float32Array(BUFLEN);
-    let scratchBuf = new Float32Array(BUFLEN);
-    let smoothBufV = new Float32Array(BUFLEN);
-    let synthBufRaw = new Float32Array(BUFLEN);
+    const smoothBuf = new Float32Array(BUFLEN);
+    const scratchBuf = new Float32Array(BUFLEN);
+    const smoothBufV = new Float32Array(BUFLEN);
+    const synthBufRaw = new Float32Array(BUFLEN);
 
     // Lorenz attractor path
     let lorenzPts = null;
@@ -261,16 +289,14 @@
       return Math.pow(Math.pow(c, n2) + Math.pow(s, n3), -1 / n1);
     }
 
-    function drawScope(sens, energy, flicker, motion, react, bloom) {
+    function drawScope(sens, energy, flicker, motion, react) {
       const n = BUFLEN;
       const TWO_PI = Math.PI * 2;
       const PI = Math.PI;
       const baseR = Math.min(W, H) * 0.40 * sens;
 
       const struct = react * 2;
-      const tenseK = 1 + (tension * 0.7 - releaseEnv * 0.25) * struct;
-      const coil = 1 - tension * 0.12 * struct + releaseEnv * 0.2 * struct;
-      const loopsBase = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct) * tenseK;
+      const loopsBase = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct);
       const twistK = midS * 1.6 * struct;
       const thickK = 1 + trebS * 0.9 * struct;
       const amp = (0.2 + Math.min(energy, 0.3)) * react;
@@ -459,8 +485,7 @@
         const cy = Math.cos(yawAngle), sy = Math.sin(yawAngle);
         const A = [0, 0, 0], B = [0, 0, 0];
         const pts = [];
-        const step = perfAvg < 19 ? 4 : perfAvg < 34 ? 8 : 12;
-        for (let i = 0; i < n; i += step) {
+        for (let i = 0; i < n; i += stepLevel) {
           const p = i / n;
           const s = buf[i] * 1.4;
           formPoint(formA, p, s, A);
@@ -508,14 +533,11 @@
       lctx.save();
       lctx.translate(W / 2, H / 2);
       lctx.rotate(0.04 * Math.sin(t * 0.04));
-      lctx.scale(breathe * coil, breathe * coil);
+      lctx.scale(breathe, breathe);
       lctx.globalCompositeOperation = "lighter";
       lctx.lineJoin = "round";
       lctx.lineCap = "round";
 
-      const sat = 100;
-      const glowL = 58;
-      const swell = 1 + bloom * 0.35 + beatGain * 0.15;
       const wMul = thickK;
 
       function strokeBands(bands, hueX, aMul) {
@@ -524,14 +546,14 @@
           const wf = (0.55 + 0.9 * df) * wMul;
           const af = 0.35 + 0.75 * df;
 
-          lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
-          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, " + (glowL + 4) + "%, " +
-            Math.min(1, 0.55 * flicker * af * swell * aMul).toFixed(3) + ")";
+          lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", 100%, 62%, " +
+            Math.min(1, 0.55 * flicker * af * aMul).toFixed(3) + ")";
           lctx.stroke(bands[b]);
 
-          lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
-          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, 90%, " +
-            Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell * aMul).toFixed(3) + ")";
+          lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", 100%, 90%, " +
+            Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * aMul).toFixed(3) + ")";
           lctx.stroke(bands[b]);
         }
       }
@@ -562,7 +584,7 @@
         bgGrad.addColorStop(1, "rgba(0,0,0,0)");
         bgKey = key;
       }
-      const a = 0.03 + (energy * 0.12 + bloom * 0.08) * react * 2;
+      const a = 0.03 + energy * 0.12 * react * 2;
       ctx.globalAlpha = Math.min(1, a / 0.16);
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, W, H);
@@ -579,6 +601,7 @@
       ctx.globalAlpha = 1;
     }
 
+    let loggedError = false;
     function frame(now) {
       const rawMs = now - last;
       const dt = Math.min(rawMs / 1000, 0.05);
@@ -589,15 +612,19 @@
         const kEnv = 1 - Math.exp(-3.1 * dt);
         const kBlend = 1 - Math.exp(-3.5 * dt);
         const kBand = 1 - Math.exp(-2.5 * dt);
-        const kFast = 1 - Math.exp(-42 * dt);
-        const kVslow = 1 - Math.exp(-0.36 * dt);
 
         perfAvg += (Math.min(rawMs, 100) - perfAvg) * 0.04;
 
+        // Sampling step, with a wide gap between the frame times that raise and
+        // lower it so a machine sitting near a threshold cannot oscillate
+        // between densities every few frames.
+        if (stepLevel === 4 && perfAvg > 24) stepLevel = 8;
+        else if (stepLevel === 8 && perfAvg < 15) stepLevel = 4;
+        else if (stepLevel === 8 && perfAvg > 42) stepLevel = 12;
+        else if (stepLevel === 12 && perfAvg < 30) stepLevel = 8;
+
         // Generate procedural waveform
-        for (let i = 0; i < BUFLEN; i++) {
-          synthBufRaw[i] = synthSample(t, i, BUFLEN);
-        }
+        fillWave(t, synthBufRaw);
 
         // Smooth it the same way the original does
         let acc = 0;
@@ -611,25 +638,19 @@
           smoothBuf[i] += (acc - smoothBuf[i]) * kBlend;
         }
 
-        // Duet voice buffer (lower frequency variation)
-        for (let i = 0; i < BUFLEN; i++) {
-          const p = i / BUFLEN;
-          let v = 0;
-          for (let w = 0; w < 4; w++) {
-            const wv = waves[w];
-            v += wv.amp * 1.5 * Math.sin(p * Math.PI * 2 * (1 + w * 0.3) + t * wv.freq * 0.4 + wv.phase);
+        // Duet voice buffer — only while that second line is on screen.
+        if (duetOn || duetFade > 0.01) {
+          fillDuet(t, scratchBuf);
+          acc = 0;
+          for (let i = 0; i < BUFLEN; i++) {
+            acc += (scratchBuf[i] - acc) * 0.06;
+            scratchBuf[i] = acc;
           }
-          scratchBuf[i] = v / 4;
-        }
-        acc = 0;
-        for (let i = 0; i < BUFLEN; i++) {
-          acc += (scratchBuf[i] - acc) * 0.06;
-          scratchBuf[i] = acc;
-        }
-        acc = 0;
-        for (let i = BUFLEN - 1; i >= 0; i--) {
-          acc += (scratchBuf[i] - acc) * 0.06;
-          smoothBufV[i] += (acc - smoothBufV[i]) * kBlend;
+          acc = 0;
+          for (let i = BUFLEN - 1; i >= 0; i--) {
+            acc += (scratchBuf[i] - acc) * 0.06;
+            smoothBufV[i] += (acc - smoothBufV[i]) * kBlend;
+          }
         }
 
         // Simulated energy
@@ -649,50 +670,9 @@
         }
         slow += (slowTarget - slow) * dt * 0.15;
 
-        rot += (0.15 + energy * 0.4 * react) * slow * dt + beatGain * 0.1 * dt;
+        rot += (0.15 + energy * 0.4 * react) * slow * dt;
 
         if (morph < 1) morph = Math.min(1, morph + dt * 0.12);
-
-        // Bloom from synthetic "hits"
-        fastE += (rms - fastE) * kFast;
-        if (fastE > energy * 1.3 && fastE > 0.02 && t > bloomGate) {
-          bloomTarget = 0.4;
-          bloomGate = t + 1.5;
-
-          const iv = t - lastOnsetT;
-          lastOnsetT = t;
-          if (iv > 0.22 && iv < 2.0) {
-            let cand = iv;
-            while (cand > 0.85) cand /= 2;
-            while (cand < 0.3) cand *= 2;
-            if (Math.abs(cand - beatPeriod) / beatPeriod < 0.18) {
-              beatPeriod += (cand - beatPeriod) * 0.15;
-              beatConf = Math.min(0.5, beatConf + 0.1);
-              const err = beatPhase % 1;
-              beatPhase -= (err < 0.5 ? err : err - 1) * 0.3;
-            } else if ((beatConf -= 0.12) <= 0) {
-              beatPeriod = cand;
-              beatConf = 0.1;
-            }
-          }
-
-          if (tension > 0.25) {
-            releaseEnv = Math.min(0.4, releaseEnv + tension * 0.3);
-            tension *= 0.4;
-          }
-        }
-        bloomTarget *= Math.exp(-dt * 2.0);
-        bloom += (bloomTarget - bloom) * (1 - Math.exp(-3 * dt));
-
-        beatPhase += dt / beatPeriod;
-        beatConf = Math.max(0, beatConf - dt * 0.08);
-        beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * (1 - Math.exp(-14 * dt));
-        beatGain = beatPulse * beatConf * react;
-
-        energyVslow += (rms - energyVslow) * kVslow;
-        tension = Math.min(0.4, Math.max(0,
-          tension + (Math.max(0, energy - energyVslow * 1.18) * 0.8 - 0.03) * dt));
-        releaseEnv *= Math.exp(-dt * 2.0);
 
         // Auto shape cycling — longer intervals for calm transitions
         const due = t - lastShapeT;
@@ -714,10 +694,10 @@
         mirrorFade += ((mirrorOn ? 1 : 0) - mirrorFade) * kFade;
         duetFade += ((duetOn ? 1 : 0) - duetFade) * kFade;
 
-        breathe = 1 + 0.015 * Math.sin(t * 0.17) + (energy * 0.12 + bloom * 0.08) * react + beatGain * 0.01;
+        breathe = 1 + 0.015 * Math.sin(t * 0.17) + energy * 0.12 * react;
 
         const flicker = 0.99 + 0.01 * Math.sin(t * 1.3 + Math.sin(t * 0.5) * 1.2);
-        drawScope(sensitivity, energy, flicker, motion, react, bloom);
+        drawScope(sensitivity, energy, flicker, motion, react);
 
         // Composite
         ctx.globalCompositeOperation = "source-over";
@@ -753,9 +733,9 @@
         }
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = Math.min(1, 0.7 * (1 + bloom * 0.6));
+        ctx.globalAlpha = 0.7;
         ctx.drawImage(glow2Canvas, 0, 0, W, H);
-        ctx.globalAlpha = Math.min(1, 0.45 * (1 + bloom));
+        ctx.globalAlpha = 0.45;
         ctx.drawImage(glowCanvas, 0, 0, W, H);
         ctx.globalAlpha = 1;
         ctx.drawImage(lineCanvas, 0, 0);
@@ -766,7 +746,9 @@
           ctx.fillRect(0, 0, W, H);
         }
       } catch (err) {
-        console.error("render error:", err);
+        // Report once: a throwing frame throws every frame, and logging at
+        // 60fps would bury the original error and stall the console.
+        if (!loggedError) { loggedError = true; console.error("render error:", err); }
       }
       requestAnimationFrame(frame);
     }
