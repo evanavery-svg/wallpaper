@@ -172,7 +172,6 @@
     // ---- State (randomized on each page load) ----
     let t = Math.random() * 1000, last = performance.now();
     let rot = Math.random() * Math.PI * 2;
-    let energy = 0;
     let slow = 0.3 + Math.random() * 0.5;
     let slowTarget = slow;
     let nextEvent = t + 4 + Math.random() * 8;
@@ -183,14 +182,18 @@
     let formA = startShape, formB = startShape, morph = 1;
     let lastShapeT = t;
     let mirrorOn = Math.random() < 0.3, backdropOn = true, duetOn = Math.random() < 0.2;
+    let mirrorFade = mirrorOn ? 1 : 0;
+    let duetFade = duetOn ? 1 : 0;
 
     let beatPeriod = 0.5, lastOnsetT = -10, beatPhase = 0, beatConf = 0;
     let beatPulse = 0, beatGain = 0;
 
-    let tension = 0, releaseEnv = 0, energyVslow = 0;
-    let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
+    let tension = 0, releaseEnv = 0, energyVslow = synthRMS(t);
+    let fastE = synthRMS(t), bloom = 0, bloomTarget = 0, bloomGate = 0;
+    let energy = synthRMS(t);
 
-    let bassS = 0, midS = 0, trebS = 0;
+    const initBands = synthBands(t);
+    let bassS = initBands.bass, midS = initBands.mid, trebS = initBands.treb;
 
     // Color from slider
     const hueInput = document.getElementById("hue");
@@ -533,15 +536,15 @@
       const mainBands = buildBands(smoothBuf, rot, loopsBase, 1);
       strokeBands(mainBands, hue, 1);
 
-      if (duetOn && smoothBufV) {
+      if (duetFade > 0.01 && smoothBufV) {
         const duetBands = buildBands(smoothBufV, -rot * 0.85 + 0.7, loopsBase * 0.62, 0.94);
-        strokeBands(duetBands, hue - 45, 0.55);
+        strokeBands(duetBands, hue - 45, 0.55 * duetFade);
       }
 
-      if (mirrorOn) {
+      if (mirrorFade > 0.01) {
         lctx.scale(-1, 1);
         lctx.rotate(0.5 + 0.3 * Math.sin(t * 0.05));
-        strokeBands(mainBands, hue + 30, 0.34);
+        strokeBands(mainBands, hue + 30, 0.34 * mirrorFade);
       }
 
       lctx.restore();
@@ -568,7 +571,9 @@
         const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
         ctx.globalAlpha = 0.04 + 0.2 * tw * tw;
         const sr = s.r * DPR;
-        ctx.fillRect(s.x * W, s.y * H, sr, sr);
+        ctx.beginPath();
+        ctx.arc(s.x * W, s.y * H, sr, 0, 6.2832);
+        ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
@@ -645,11 +650,11 @@
 
         rot += (0.15 + energy * 0.4 * react) * slow * dt + beatGain * 0.1 * dt;
 
-        if (morph < 1) morph = Math.min(1, morph + dt * 0.2);
+        if (morph < 1) morph = Math.min(1, morph + dt * 0.12);
 
         // Bloom from synthetic "hits"
         fastE += (rms - fastE) * kFast;
-        if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
+        if (fastE > energy * 1.3 && fastE > 0.02 && t > bloomGate) {
           bloomTarget = 0.4;
           bloomGate = t + 1.5;
 
@@ -699,9 +704,14 @@
 
         hue = parseFloat(hueInput.value);
 
-        // Occasionally toggle mirror and duet (rare)
-        if (Math.random() < 0.00005) mirrorOn = !mirrorOn;
-        if (Math.random() < 0.00004) duetOn = !duetOn;
+        // Occasionally toggle mirror and duet (rate-independent, ~once per 5-8 min)
+        if (Math.random() < dt * 0.003) mirrorOn = !mirrorOn;
+        if (Math.random() < dt * 0.002) duetOn = !duetOn;
+
+        // Smooth fade for mirror and duet
+        const kFade = 1 - Math.exp(-1.5 * dt);
+        mirrorFade += ((mirrorOn ? 1 : 0) - mirrorFade) * kFade;
+        duetFade += ((duetOn ? 1 : 0) - duetFade) * kFade;
 
         breathe = 1 + 0.015 * Math.sin(t * 0.17) + (energy * 0.12 + bloom * 0.08) * react + beatGain * 0.01;
 
