@@ -212,6 +212,9 @@
     }
     window.addEventListener("mousemove", showSlider);
     window.addEventListener("touchstart", showSlider, { passive: true });
+    // Keep the bar up while it is actually being adjusted (drag or arrow keys),
+    // which produce no mousemove of their own.
+    hueInput.addEventListener("input", showSlider);
 
     // Settings
     const sensitivity = 1.0;
@@ -510,8 +513,8 @@
       lctx.lineJoin = "round";
       lctx.lineCap = "round";
 
-      const sat = Math.min(100, (hue / 14) * 100);
-      const glowL = 58 + (100 - sat) * 0.25;
+      const sat = 100;
+      const glowL = 58;
       const swell = 1 + bloom * 0.35 + beatGain * 0.15;
       const wMul = thickK;
 
@@ -554,9 +557,8 @@
     function drawBackdrop() {
       const key = hue + "|" + W + "x" + H;
       if (key !== bgKey) {
-        const sat = Math.min(100, (hue / 14) * 100);
         bgGrad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75);
-        bgGrad.addColorStop(0, "hsla(" + hue + ", " + sat + "%, 40%, 0.16)");
+        bgGrad.addColorStop(0, "hsla(" + hue + ", 100%, 40%, 0.16)");
         bgGrad.addColorStop(1, "rgba(0,0,0,0)");
         bgKey = key;
       }
