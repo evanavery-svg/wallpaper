@@ -38,10 +38,10 @@
     const waves = [];
     for (let i = 0; i < WAVE_COUNT; i++) {
       waves.push({
-        freq: 0.3 + Math.random() * 4.5,
+        freq: 0.1 + Math.random() * 1.5,
         phase: Math.random() * Math.PI * 2,
-        amp: 0.15 + Math.random() * 0.35,
-        drift: 0.01 + Math.random() * 0.03,
+        amp: 0.06 + Math.random() * 0.14,
+        drift: 0.005 + Math.random() * 0.015,
       });
     }
 
@@ -50,23 +50,23 @@
       const p = i / n;
       for (let w = 0; w < WAVE_COUNT; w++) {
         const wv = waves[w];
-        v += wv.amp * Math.sin(p * Math.PI * 2 * (1 + w * 0.7) + t * wv.freq + wv.phase + Math.sin(t * wv.drift) * 3);
+        v += wv.amp * Math.sin(p * Math.PI * 2 * (1 + w * 0.7) + t * wv.freq + wv.phase + Math.sin(t * wv.drift) * 1.5);
       }
       return v / WAVE_COUNT;
     }
 
     // Simulate band energy from the procedural signal
     function synthBands(t) {
-      const bass = 0.2 + 0.15 * Math.sin(t * 0.31) + 0.1 * Math.sin(t * 0.17);
-      const mid = 0.25 + 0.12 * Math.sin(t * 0.53 + 1.2) + 0.08 * Math.sin(t * 0.29);
-      const treb = 0.15 + 0.1 * Math.sin(t * 0.97 + 2.4) + 0.06 * Math.sin(t * 0.61);
+      const bass = 0.12 + 0.06 * Math.sin(t * 0.15) + 0.04 * Math.sin(t * 0.09);
+      const mid = 0.14 + 0.05 * Math.sin(t * 0.23 + 1.2) + 0.03 * Math.sin(t * 0.13);
+      const treb = 0.08 + 0.04 * Math.sin(t * 0.37 + 2.4) + 0.02 * Math.sin(t * 0.21);
       return { bass, mid, treb };
     }
 
     // Simulate RMS energy
     function synthRMS(t) {
-      return 0.12 + 0.08 * Math.sin(t * 0.23) + 0.06 * Math.sin(t * 0.41 + 1.0)
-           + 0.04 * Math.abs(Math.sin(t * 1.7));
+      return 0.06 + 0.03 * Math.sin(t * 0.11) + 0.02 * Math.sin(t * 0.19 + 1.0)
+           + 0.01 * Math.abs(Math.sin(t * 0.7));
     }
 
     // ---- Render layers ----
@@ -158,8 +158,8 @@
 
     // Settings
     const sensitivity = 1.0;
-    const motion = 0.4;
-    const react = 0.5;
+    const motion = 0.25;
+    const react = 0.3;
     const blend = 1.0;
 
     // Waveform buffers
@@ -214,7 +214,7 @@
       const twistK = midS * 1.6 * struct;
       const thickK = 1 + trebS * 0.9 * struct;
       const amp = (0.2 + Math.min(energy, 0.3)) * react;
-      const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
+      const tilt = 0.6 + 0.2 * Math.sin(t * 0.05);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
       let loops = loopsBase;
 
@@ -402,7 +402,7 @@
         const step = perfAvg < 19 ? 4 : perfAvg < 34 ? 8 : 12;
         for (let i = 0; i < n; i += step) {
           const p = i / n;
-          const s = buf[i] * 3.2;
+          const s = buf[i] * 1.4;
           formPoint(formA, p, s, A);
           let x3 = A[0], y3 = A[1], z3 = A[2];
           if (ease > 0) {
@@ -447,7 +447,7 @@
       lctx.clearRect(0, 0, W, H);
       lctx.save();
       lctx.translate(W / 2, H / 2);
-      lctx.rotate(0.12 * Math.sin(t * 0.09));
+      lctx.rotate(0.04 * Math.sin(t * 0.04));
       lctx.scale(breathe * coil, breathe * coil);
       lctx.globalCompositeOperation = "lighter";
       lctx.lineJoin = "round";
@@ -527,7 +527,7 @@
         t += dt;
 
         const kEnv = 1 - Math.exp(-3.1 * dt);
-        const kBlend = 1 - Math.exp(-7.7 * dt);
+        const kBlend = 1 - Math.exp(-3.5 * dt);
         const kBand = 1 - Math.exp(-2.5 * dt);
         const kFast = 1 - Math.exp(-42 * dt);
         const kVslow = 1 - Math.exp(-0.36 * dt);
@@ -582,25 +582,22 @@
         midS += (bands.mid - midS) * kBand;
         trebS += (bands.treb - trebS) * kBand;
 
-        // Pace changes
+        // Pace changes — gentle, no reversals
         if (t > nextEvent) {
-          nextEvent = t + 3 + Math.random() * 6;
-          const r = Math.random();
-          slowTarget = r < 0.35 ? 0.05 + Math.random() * 0.2
-                     : r < 0.70 ? 0.9 + Math.random() * 0.8
-                     :          -(0.6 + Math.random() * 0.8);
+          nextEvent = t + 8 + Math.random() * 12;
+          slowTarget = 0.3 + Math.random() * 0.5;
         }
-        slow += (slowTarget - slow) * dt * 0.4;
+        slow += (slowTarget - slow) * dt * 0.15;
 
-        rot += (0.3 + energy * 1.1 * react) * slow * dt + beatGain * 0.5 * dt;
+        rot += (0.15 + energy * 0.4 * react) * slow * dt + beatGain * 0.1 * dt;
 
-        if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
+        if (morph < 1) morph = Math.min(1, morph + dt * 0.2);
 
         // Bloom from synthetic "hits"
         fastE += (rms - fastE) * kFast;
         if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
-          bloomTarget = 1;
-          bloomGate = t + 0.5;
+          bloomTarget = 0.4;
+          bloomGate = t + 1.5;
 
           const iv = t - lastOnsetT;
           lastOnsetT = t;
@@ -609,37 +606,37 @@
             while (cand > 0.85) cand /= 2;
             while (cand < 0.3) cand *= 2;
             if (Math.abs(cand - beatPeriod) / beatPeriod < 0.18) {
-              beatPeriod += (cand - beatPeriod) * 0.25;
-              beatConf = Math.min(1, beatConf + 0.25);
+              beatPeriod += (cand - beatPeriod) * 0.15;
+              beatConf = Math.min(0.5, beatConf + 0.1);
               const err = beatPhase % 1;
-              beatPhase -= (err < 0.5 ? err : err - 1) * 0.5;
+              beatPhase -= (err < 0.5 ? err : err - 1) * 0.3;
             } else if ((beatConf -= 0.12) <= 0) {
               beatPeriod = cand;
-              beatConf = 0.2;
+              beatConf = 0.1;
             }
           }
 
           if (tension > 0.25) {
-            releaseEnv = Math.min(1, releaseEnv + tension * 0.9);
-            tension *= 0.25;
+            releaseEnv = Math.min(0.4, releaseEnv + tension * 0.3);
+            tension *= 0.4;
           }
         }
-        bloomTarget *= Math.exp(-dt * 1.4);
-        bloom += (bloomTarget - bloom) * (1 - Math.exp(-5 * dt));
+        bloomTarget *= Math.exp(-dt * 2.0);
+        bloom += (bloomTarget - bloom) * (1 - Math.exp(-3 * dt));
 
         beatPhase += dt / beatPeriod;
-        beatConf = Math.max(0, beatConf - dt * 0.05);
+        beatConf = Math.max(0, beatConf - dt * 0.08);
         beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * (1 - Math.exp(-14 * dt));
-        beatGain = beatPulse * beatConf * react * 2;
+        beatGain = beatPulse * beatConf * react;
 
         energyVslow += (rms - energyVslow) * kVslow;
-        tension = Math.min(1, Math.max(0,
-          tension + (Math.max(0, energy - energyVslow * 1.18) * 2.0 - 0.05) * dt));
-        releaseEnv *= Math.exp(-dt * 1.5);
+        tension = Math.min(0.4, Math.max(0,
+          tension + (Math.max(0, energy - energyVslow * 1.18) * 0.8 - 0.03) * dt));
+        releaseEnv *= Math.exp(-dt * 2.0);
 
-        // Auto shape cycling
+        // Auto shape cycling — longer intervals for calm transitions
         const due = t - lastShapeT;
-        if ((due > 14 && (bloomTarget > 0.9 || energy < 0.04)) || due > 30) {
+        if (due > 45) {
           formA = formB;
           formB = (formB + 1 + Math.floor(Math.random() * (NSHAPES - 1))) % NSHAPES;
           morph = 0;
@@ -658,13 +655,13 @@
         if (hue < 0) hue += 360;
         if (hue >= 360) hue -= 360;
 
-        // Occasionally toggle mirror and duet
-        if (Math.random() < 0.0002) mirrorOn = !mirrorOn;
-        if (Math.random() < 0.00015) duetOn = !duetOn;
+        // Occasionally toggle mirror and duet (rare)
+        if (Math.random() < 0.00005) mirrorOn = !mirrorOn;
+        if (Math.random() < 0.00004) duetOn = !duetOn;
 
-        breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react + beatGain * 0.04;
+        breathe = 1 + 0.015 * Math.sin(t * 0.17) + (energy * 0.12 + bloom * 0.08) * react + beatGain * 0.01;
 
-        const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
+        const flicker = 0.99 + 0.01 * Math.sin(t * 1.3 + Math.sin(t * 0.5) * 1.2);
         drawScope(sensitivity, energy, flicker, motion, react, bloom);
 
         // Composite
