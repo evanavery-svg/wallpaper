@@ -129,19 +129,20 @@
     window.addEventListener("resize", resize);
     resize();
 
-    // ---- State ----
-    let t = 0, last = performance.now();
-    let rot = 0;
+    // ---- State (randomized on each page load) ----
+    let t = Math.random() * 1000, last = performance.now();
+    let rot = Math.random() * Math.PI * 2;
     let energy = 0;
-    let slow = 1;
-    let slowTarget = 1;
-    let nextEvent = 0;
+    let slow = 0.3 + Math.random() * 0.5;
+    let slowTarget = slow;
+    let nextEvent = t + 4 + Math.random() * 8;
     let breathe = 1;
 
     const NSHAPES = 18;
-    let formA = 0, formB = 0, morph = 1;
-    let lastShapeT = 0;
-    let mirrorOn = false, backdropOn = true, duetOn = false;
+    const startShape = Math.floor(Math.random() * NSHAPES);
+    let formA = startShape, formB = startShape, morph = 1;
+    let lastShapeT = t;
+    let mirrorOn = Math.random() < 0.3, backdropOn = true, duetOn = Math.random() < 0.2;
 
     let beatPeriod = 0.5, lastOnsetT = -10, beatPhase = 0, beatConf = 0;
     let beatPulse = 0, beatGain = 0;
@@ -151,10 +152,10 @@
 
     let bassS = 0, midS = 0, trebS = 0;
 
-    // Color hue drifts slowly over time
-    let hue = 140;
-    let hueTarget = 140;
-    let nextHueChange = 20;
+    // Color hue randomized on each load and drifts over time
+    let hue = Math.random() * 360;
+    let hueTarget = Math.random() * 360;
+    let nextHueChange = t + 25 + Math.random() * 35;
 
     // Settings
     const sensitivity = 1.0;
